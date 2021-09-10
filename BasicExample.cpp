@@ -6,7 +6,6 @@
 #include <map>
 #include <fstream>
 
-
 // contains templated, easy to use functions for controlling the
 // functions exposed through AmplifierSDK.h
 #include "SDK.h"
@@ -20,6 +19,7 @@
 
 #include <random>
 
+int Number_of_files = 6;
 std::vector<std::pair<std::string, std::string>> m_vpAmpDetails;
 static CAmplifier amp;
 CRITICAL_SECTION m_CriticalSection;
@@ -30,6 +30,7 @@ std::string sChannelLabels_10_20_32 = "Fp1,Fp2,F7,F3,Fz,F4,F8,FC5,FC1,FC2,FC6,T7
 
 // forward declaration needed for some functions:
 void CheckImpedances(std::vector<float>& vfImpVals);
+DWORD __stdcall RecordFunc(void* pVoid);
 void Set1020();
 
 // synchronized function for writing data to file
@@ -42,8 +43,7 @@ DWORD WINAPI PrintFunc(void* pVoid)
 	LARGE_INTEGER liTimeInfo;
 	INT64 nCounterStart;
 	QueryPerformanceFrequency(&liTimeInfo);
-	double dPCFrequency = double(liTimeInfo.QuadPart) / 1000; //get rid of dividing by 1000 to make into secs instead of ms
-	//double dPCFrequency = double(liTimeInfo.QuadPart) ;
+	double dPCFrequency = double(liTimeInfo.QuadPart) / 1000;
 	QueryPerformanceCounter(&liTimeInfo);
 	nCounterStart = liTimeInfo.QuadPart;
 	double dTime;
@@ -59,7 +59,7 @@ DWORD WINAPI PrintFunc(void* pVoid)
 		QueryPerformanceCounter(&liTimeInfo);
 		dTime = double(liTimeInfo.QuadPart - nCounterStart) / dPCFrequency;
 		if (nSamples != 0)
-			std::cout << nSamples << " samples: in " << dTime << " milliseconds\n"; //CHANGE TO SECONDS
+			std::cout << nSamples << " samples: in " << dTime << " milliseconds\n";
 		else
 		{
 			Sleep((DWORD)1);
@@ -81,14 +81,14 @@ void PrintChannelValues()
 	int nChoice = -1;
 	while (nChoice!=1)
 	{
-		//get rid of switch statement
+
 		std::cout << "\n\nChoose from available options:";
 		std::cout << "\n\t0: One shot data grab";
 		std::cout << "\n\t1: Go back to main menu";
 		std::cout << "\n\t2: Print Loop";
 
 		std::cout << "\n>> ";
-		std::cin >> nChoice; //dont need this
+		std::cin >> nChoice;
 		int nSamples = 0;
 		// first count the number of enabled channels
 		int nEnabled = 0;
@@ -149,7 +149,7 @@ struct RecordingParams{
 };
 
 // synchronized function for writing data to file
-DWORD WINAPI RecordFunc(void* pVoid)
+DWORD WINAPI RecordFunc(void* pVoid) // Writing Data function
 {
 
 	RecordingParams pRecordingParams = *(RecordingParams*)pVoid;
@@ -167,9 +167,12 @@ DWORD WINAPI RecordFunc(void* pVoid)
 			int nRecRetVal = 0;
 			EnterCriticalSection(&m_CriticalSection);
 			nRet = amp.GetData(&Buffer[0], (int)Buffer.size(), (int)Buffer.size());
+			//add number of samples
+
 
 			if (nRet > 0)
-				nRecRetVal = CStorage::StoreDataBlock(amp.m_hAmplifier, &Buffer[0], nRet);
+				nRecRetVal = CStorage::StoreDataBlock(amp.m_hAmplifier, &Buffer[0], nRet); // store the internal memory data
+
 
 			LeaveCriticalSection(&m_CriticalSection);
 
@@ -181,68 +184,83 @@ DWORD WINAPI RecordFunc(void* pVoid)
 		}
 
 	}
+
+
+
 	DeleteCriticalSection(&m_CriticalSection);
 	return TRUE;
 }
 
-void Record()
+
+
+string IntToStr(int n) {
+	stringstream result;
+	result << n;
+	return result.str();
+
+}
+
+void Record(){
+
+//--------------REDO---------------\\
+
+std::string sFileName;
+HANDLE hThread = NULL;
+m_bIsThreadRunning = false;
+int nSecondsCtr = 0;
+int option;
+
+// get the necessary information from the amplifier
+RawDataHandler rdh(amp);
+int nSampleSize = rdh.getSampleSize();
+float fBaseSR;
+float fSubSampleDevisor;
+int nRes = amp.GetProperty(fBaseSR, DPROP_F32_BaseSampleRate);
+if (nRes != AMP_OK)
 {
-	//std::string sFileName;
-	fstream sFileName;
-	HANDLE hThread = NULL;
-	m_bIsThreadRunning = false;
-	int nSecondsCtr = 0;
+	// handle error
+	return;
+}
+nRes = amp.GetProperty(fSubSampleDevisor, DPROP_F32_SubSampleDivisor);
+if (nRes != AMP_OK)
+{
+	// handle error
+	return;
+}
 
-	// get the necessary information from the amplifier
-	RawDataHandler rdh(amp);
-	int nSampleSize = rdh.getSampleSize();
-	float fBaseSR;
-	float fSubSampleDevisor;
-	int nRes = amp.GetProperty(fBaseSR, DPROP_F32_BaseSampleRate);
-	if (nRes != AMP_OK)
-	{
-		// handle error
-		return;
-	}
-	nRes = amp.GetProperty(fSubSampleDevisor, DPROP_F32_SubSampleDivisor);
-	if (nRes != AMP_OK)
-	{
-		// handle error
-		return;
-	}
+// pack the information
+RecordingParams pRecordingParams;
+pRecordingParams.fSR = fBaseSR / fSubSampleDevisor;
+pRecordingParams.nSampleSize = nSampleSize;
+pRecordingParams.nBufferLen = (int)(pRecordingParams.fSR * .2 * 200);
 
-	// pack the information
-	RecordingParams pRecordingParams;
-	pRecordingParams.fSR = fBaseSR / fSubSampleDevisor;
-	pRecordingParams.nSampleSize = nSampleSize;
-	pRecordingParams.nBufferLen = (int)(pRecordingParams.fSR * .2 * 200);
+	std::cout << "\n\nPlease enter filename, e.g. \'rec01.eeg\' (.dat, .vmrk, and .vhdr files will be written to this directory):\n" << ">> ";
+	std::cin >> sFileName;
 
-	int nCheckImpedances = 0;
-	std::vector<float> vfImpVals;
-	std::cout << "\nCheck impedances?:\n\t0: no\n\t1: yes\n>> ";
-	std::cin >> nCheckImpedances;
-	if (nCheckImpedances != 0)
-		CheckImpedances(vfImpVals);
 
-	//std::cout << "\n\nPlease enter filename, e.g. \'rec01.eeg\' (.dat, .vmrk, and .vhdr files will be written to this directory):\n" << ">> " ;
-	//std::cin >> sFileName;
-	//---------------------MAKE FILE READ TO AN EEG AUTOMATICALLY-----------------------------\\
+//for (int i = 0; i < Number_of_files; i++) {
+	//sFileName = "data_" + IntToStr(i) + ".eeg";
+	//printf("\n");
+//std:cout << sFileName << " \n";
 
 
 
-	std::cout << "\nUse 10-20 channel labels (assumes 32 channels)?\n\t0: no\n\t1: yes\n>> ";
+
+
+	std::cout << "\nUse 10-20 channel labels (assumes 32 channels)?\n\t0: no\n\t1: yes\n>> "; //already in the code
 	int nAddChannelLabels = 0;
 	std::cin >> nAddChannelLabels;
 	if (nAddChannelLabels != 0)
 		Set1020();
 
-	// initialize the recording---the final argument is whether or not to record to the SD card in the case of LiveAmp
-	//nRes = CStorage::StartRecording(amp, ("./" + sFileName), "optional comment", false);
+	//initialize the recording---the final argument is whether or not to record to the SD card in the case of LiveAmp
+	nRes = CStorage::StartRecording(amp, ("./" + sFileName).c_str(), "optional comment", false); //already in the code
 	if (nRes != AMP_OK)
 	{
-		// handle error
-		return;
+		//handle error
+		//return;
 	}
+
 
 	// start data flow
 	nRes = amp.StartAcquisition(RecordingMode::RM_NORMAL);
@@ -252,6 +270,7 @@ void Record()
 		return;
 	}
 
+
 	// launch recording thread
 	m_bIsThreadRunning = true;
 	hThread = CreateThread(NULL, 0, RecordFunc, &pRecordingParams, 0, NULL);
@@ -260,38 +279,39 @@ void Record()
 		std::cout << "Error spawning recording thread\n";
 		return;
 	}
-	
+
+
 	// wait for about 10 seconds
-	while (nSecondsCtr<10)
+	while (nSecondsCtr < 4.98)
 	{
 		Sleep(1000);
 		std::cout << "\n\t...writing...";
 		nSecondsCtr++;
 	}
 
+
+
+
+
 	// kill the thread
-	if (m_bIsThreadRunning == true)
+	while (m_bIsThreadRunning == true)
 	{
 		m_bIsThreadRunning = false;
 		WaitForSingleObject(hThread, INFINITE);
+		break;
 	}
 	std::cout << "\nDone\n";
+//}
 
 	// stop data flow
 	nRes = amp.StopAcquisition();
-	if (nRes != AMP_OK)
-	{
+	if (nRes != AMP_OK) {
 		// handle error
-		return;
+		//return;
+
 	}
+
 	
-	// shut down recording
-	nRes = CStorage::StopRecording(amp);
-	if (nRes != AMP_OK)
-	{
-		// handle error
-		return;
-	}
 
 }
 
@@ -335,7 +355,7 @@ void CheckImpedances(std::vector<float>& vfImpVals)
 	std::string sAmpFamily;
 	int nIsRef = 0;
 	while(nRet<=AMP_OK)
-		nRet = amp.GetData(&vfImpData[0], vfImpData.size() * sizeof(float), vfImpData.size() * sizeof(float));
+		nRet = amp.GetData(&vfImpData[0], vfImpData.size() * sizeof(float), vfImpData.size() * sizeof(float)); //edit this 
 	float fVal;
 	if (nRet > AMP_OK)
 	{
@@ -360,8 +380,7 @@ void CheckImpedances(std::vector<float>& vfImpVals)
 }
 
 // example for how to change a device property
-void ChangeSampleRate()
-{
+void ChangeSampleRate(){
 	
 	float fSR, fSSD;
 	int nIdx;
@@ -466,7 +485,7 @@ void ChangeSampleRate()
 		std::cout << "\n\tCurrent Sub-Sample Divisor: " << fSSD;
 	}
 	std::cout << "\n\tCurrent Effective Sampling Rate: " << (int)(fSR / fSSD);
-
+	
 }
 
 void DisplaySomeProperties()
@@ -505,8 +524,7 @@ void DisplaySomeProperties()
 	
 }
 
-void ConnectToAmp(int nIdx)
-{
+void ConnectToAmp(int nIdx){
 	
 
 	amp.Close();
@@ -586,40 +604,21 @@ int DisplayAmpInfo(int nCount)
 	return nIdx;
 }
 
-int SearchForAmps()
-{
-	std::cout << "\n\nChoose interface type:\n" <<
-		"\t0: ANY\n" <<
-		"\t1: USB\n" <<
-		"\t2: BT\n" <<
-		"\t3: SIM\n>> ";
-	int nInterfaceType;
-	std::cin >> nInterfaceType;
+int SearchForAmps(){
+
+	std::cout << " Welcome To AntiChamp DEVICE\n" "Searching for devices...";
+	
 
 	// error codes enumerated in Amplifier_LIB.h
 	int nRes;
 
 	// container for Device address
-	std::string sHWDeviceAddress = "";
+	std::string sHWDeviceAddress = ""; //5002 100010-0374
 
 	// container for interface type
 	char hwi[20];
-	switch (nInterfaceType)
-	{
-	case 3:
-		strcpy_s(hwi, "SIM");
-		break;
-	case 2:
-		strcpy_s(hwi, "BT");
-		break;
-	case 1:
-		strcpy_s(hwi, "USB");
-		break;
-	default:
-		strcpy_s(hwi, "ANY");
-		break;
-	}
-	std::cout << "\n\tSearching for devices...";
+	strcpy_s(hwi, "USB");
+
 	// AmplifierSDK call to enumerate connected devices:
 	nRes = EnumerateDevices(hwi, sizeof(hwi), (const char*)sHWDeviceAddress.data(), 0);
  	return nRes;
@@ -628,22 +627,17 @@ int SearchForAmps()
 int SelectAmpFamily()
 {
 	int nRes;
-	std::cout << "\n\nChoose amp family:\n" <<
-		"\t0: LiveAmp:   \n" <<
-		"\t1: actiCHamp: \n>> ";
-		
-	int nFamily;
-	cin >> nFamily;
 
 	// AmplifierSDK call to select amp family:
-	nRes = SetAmplifierFamily((AmplifierFamily)nFamily);
+	nRes = SetAmplifierFamily((eActiChampFamily));
 	return nRes;
 }
 
 int main()
 {
-	std::cout << "Welcome to a basic Brain Products SDK example application.\n" <<
-		"Please follow the instructions below.";
+	std::string sFileName;
+	std::cout << "Welcome to a basic Brain Products SDK:\n\n\n";
+	//"Please follow the instructions below.";
 	int nRes;
 	amp.Close();
 	nRes = SelectAmpFamily();
@@ -658,42 +652,19 @@ int main()
 	}
 	nRes = DisplayAmpInfo(nRes);
 
+	int option;
+
 	ConnectToAmp(nRes);
 	DisplaySomeProperties();
 
 	std::vector<float> vfImpVals;
 
-	int nChoice = -1;
-	while (nChoice != 4)
-	{
-		std::cout << "\n\nChoose from available options:";
-		std::cout << "\n\t0: Change Sampling Rate";
-		std::cout << "\n\t1: Check impedances";
-		std::cout << "\n\t2: Write 10 seconds of data to file";
-		std::cout << "\n\t3: Print channel values to console";
-		std::cout << "\n\t4: Exit";
-		std::cout << "\n>> ";
-		std::cin >> nChoice;
-		switch (nChoice)
-		{
-		case 0:
-			ChangeSampleRate();
-			break;
-		case 1: 
-			CheckImpedances(vfImpVals);
-			break;
-		case 2:
-			Record();
-			break;
-		case 3:
-			PrintChannelValues();
-			break;
-		case 4:
-			break;
-		}
-	}
-	amp.Close();
-	return 0;
+	ChangeSampleRate();
+	
+	Record();
+		
+		amp.Close();
+		return 0;
+	
+	
 }
-
-
